@@ -1,0 +1,8 @@
+Number of repetitions: 50
+Integration time (ms): 500
+Laser power (mW): 5
+Prusa position (mm): 9.09
+Nanodrive position (um): 53.0
+Timestamp: 2026-04-10 14:37:57
+Label: SERS substrate only L7
+Group: Blank

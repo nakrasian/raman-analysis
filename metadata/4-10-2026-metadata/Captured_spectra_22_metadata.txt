@@ -1,0 +1,8 @@
+Number of repetitions: 25
+Integration time (ms): 500
+Laser power (mW): 5
+Prusa position (mm): 9.16
+Nanodrive position (um): 60.0
+Timestamp: 2026-04-10 13:50:03
+Label: Adrian T5 L3
+Group: No Coffee

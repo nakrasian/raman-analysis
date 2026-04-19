@@ -1,0 +1,8 @@
+Number of repetitions: 50
+Integration time (ms): 1000
+Laser power (mW): 5
+Prusa position (mm): 8.62
+Nanodrive position (um): 70.0
+Timestamp: 2026-03-03 17:43:39
+Name: MS_T5_location2
+Label: MS_T5

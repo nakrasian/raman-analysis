@@ -1,0 +1,8 @@
+Number of repetitions: 50
+Integration time (ms): 1000
+Laser power (mW): 5
+Prusa position (mm): 8.61
+Nanodrive position (um): 49.0
+Timestamp: 2026-03-03 16:17:33
+Name: Base_Substrate
+Label: Base

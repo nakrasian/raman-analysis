@@ -1,0 +1,8 @@
+Number of repetitions: 300
+Integration time (ms): 100
+Laser power (mW): 50
+Prusa position (mm): 34.97
+Nanodrive position (um): 53.0
+Timestamp: 2026-04-10 15:57:02
+Label: Adrian breathing in housing L2
+Group: Breathing

@@ -1,0 +1,8 @@
+Number of repetitions: 25
+Integration time (ms): 500
+Laser power (mW): 5
+Prusa position (mm): 9.08
+Nanodrive position (um): 73.0
+Timestamp: 2026-04-10 13:22:11
+Label: Dora T6 L1
+Group: Coffee

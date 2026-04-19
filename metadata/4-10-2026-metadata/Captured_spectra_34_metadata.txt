@@ -1,0 +1,8 @@
+Number of repetitions: 25
+Integration time (ms): 500
+Laser power (mW): 5
+Prusa position (mm): 9.13
+Nanodrive position (um): 53.0
+Timestamp: 2026-04-10 14:04:07
+Label: Allyson T6 L4
+Group: Coffee

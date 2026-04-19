@@ -1,0 +1,8 @@
+Number of repetitions: 50
+Integration time (ms): 100
+Laser power (mW): 50
+Prusa position (mm): 7.96
+Nanodrive position (um): 47.0
+Timestamp: 2026-04-10 15:00:05
+Label: 1 mmol 4MBA on quartz L1
+Group: 4MBA

@@ -1,0 +1,8 @@
+Number of repetitions: 25
+Integration time (ms): 500
+Laser power (mW): 20
+Prusa position (mm): 8.77
+Nanodrive position (um): 27.0
+Timestamp: 2026-04-10 14:18:00
+Label: Coffee L1
+Group: NA

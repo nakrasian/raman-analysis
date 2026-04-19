@@ -1,0 +1,8 @@
+Number of repetitions: 50
+Integration time (ms): 1000
+Laser power (mW): 5
+Prusa position (mm): 8.57
+Nanodrive position (um): 57.0
+Timestamp: 2026-03-03 16:28:20
+Name: Old_AA1_Substrate_1
+Label: AA_T1

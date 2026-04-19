@@ -1,0 +1,8 @@
+Number of repetitions: 25
+Integration time (ms): 500
+Laser power (mW): 5
+Prusa position (mm): 9.09
+Nanodrive position (um): 67.0
+Timestamp: 2026-04-10 14:34:39
+Label: Nathan T6 L4
+Group: Coffee
