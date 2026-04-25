@@ -107,7 +107,7 @@ class SpectraClassifier:
                         mean_impact = np.max(mean_impact, axis=-1)
                     return mean_impact
                 except Exception as tree_e:
-                    print(f"TreeExplainer failed ({tree_e}), falling back to KernelExplainer.")
+                    ## print(f"TreeExplainer failed ({tree_e}), falling back to KernelExplainer.")
                     background = shap.utils.sample(scaled_spectra, min(background_size, scaled_spectra.shape[0]))
                     explainer = shap.KernelExplainer(model_predict_func, background)
                     
