@@ -1,541 +1,600 @@
+"""
+analysis.py – SERS-EBC Breathomics ML Pipeline
+===============================================
+Supports:
+  --cv_mode loso      True Leave-One-Subject-Out CV (5 folds, one per subject)
+  --cv_mode location  Original location-based grouping (legacy)
+  --preprocess MODE   Preprocessing pipeline (see preprocessing.py)
+  --sweep             Grid search all preprocessing modes × models, report winner
+  --groups            Coffee | Breathing | Breath | all
+
+Usage examples
+--------------
+# LOSO CV with default preprocessing (als_snv), Coffee group:
+  python analysis.py --cv_mode loso
+
+# LOSO CV with Adrian_Dev airPLS pipeline:
+  python analysis.py --cv_mode loso --preprocess despike_airpls_snv
+
+# Full sweep of all preprocessing × model combinations under LOSO:
+  python analysis.py --cv_mode loso --sweep
+"""
+
 import os
 import argparse
 import pandas as pd
 import numpy as np
-
+import matplotlib
+matplotlib.use('Agg')          # non-interactive backend; safe for scripts
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 import plotly.express as px
-
-from scipy import sparse
-from scipy.sparse.linalg import spsolve
 
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import RidgeClassifier
-from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.inspection import permutation_importance
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import (classification_report, confusion_matrix,
+                              accuracy_score, precision_score,
+                              recall_score, f1_score)
 
 import joblib
 import seaborn as sns
 from preprocessing import SpectraPreprocessor
 
 
-METADATA_FOLDER = "metadata/4-10-2026-metadata"
-SPECTRA_FOLDER = "spectra/4-10-2026-spectra"
-BASELINE_FOLDER = "plots/baseline"
-ANIMATE_FOLDER = "animations/preprocessed"
-SNV_FOLDER = "plots/snv"
-PRE_PROCESSED_FOLDER = "plots/preprocessed"
-SPECTRA_LENGTH = 1024
-CROP_THRESHOL = 0
+# ---------------------------------------------------------------------------
+# Paths & constants
+# ---------------------------------------------------------------------------
+METADATA_FOLDER       = "metadata/4-10-2026-metadata"
+SPECTRA_FOLDER        = "spectra/4-10-2026-spectra"
+BASELINE_FOLDER       = "plots/baseline"
+SNV_FOLDER            = "plots/snv"
+PRE_PROCESSED_FOLDER  = "plots/preprocessed"
 COMPONENT_ANALYSIS_FOLDER = "plots/component_analysis"
-CONFUSION_MATRIX_FOLDER = "model/confusion_matrix"
-IMPORTANCE_FOLDER = "model/feature_importance"
+CONFUSION_MATRIX_FOLDER   = "model/confusion_matrix"
+IMPORTANCE_FOLDER         = "model/feature_importance"
+SPECTRA_LENGTH = 1024
+CROP_THRESHOLD = 0
 
+PREPROCESS_MODES = [
+    'als_snv',
+    'despike_als_snv',
+    'despike_airpls_snv',
+    'despike_airpls_l2',
+    'despike_airpls_area',
+]
 
-## Preprocessing Functions
-# (Moved to preprocessing.py)
-
-
-## Diagnostic and Animating Functions
-def plot_baseline_diagnostic(wavelengths, intensities, baseline, corrected, label):
-    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
-    
-    # 1. Original + Estimated Baseline
-    axes[0].plot(wavelengths, intensities, label="Original Signal", color='black', alpha=0.5)
-    axes[0].plot(wavelengths, baseline, label="Estimated Baseline", color='red', linestyle='--')
-    axes[0].set_title(f"Original & Baseline: {label}")
-    axes[0].legend()
-
-    # 2. Corrected Signal (The Result)
-    axes[1].plot(wavelengths, corrected, label="Corrected Signal", color='blue')
-    axes[1].set_title("Baseline Corrected (Signal - Baseline)")
-    axes[1].legend()
-
-    # 3. The Residual (The Baseline itself)
-    axes[2].plot(wavelengths, baseline, label="Residual (Background)", color='orange')
-    axes[2].set_title("Residual (The part that was removed)")
-    axes[2].set_xlabel("Wavenumber (cm⁻¹)")
-    axes[2].legend()
-
-    plt.tight_layout()
-    diagnostic_file = os.path.join(BASELINE_FOLDER, f"{label}_baseline_diagnostic.png")
-    os.mkdir(BASELINE_FOLDER) if not os.path.exists(BASELINE_FOLDER) else None
-    plt.savefig(diagnostic_file)
-    print(f"Saved baseline diagnostic plot to {diagnostic_file}")
-    plt.close()
-
-def plot_normalization_diagnostic(wavenumbers, baselined, normalized, label):
-    """
-    Plots a comparison between the baselined spectrum and the normalized version.
-    """
-    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-
-    # 1. Post-Baseline (Before Normalization)
-    axes[0].plot(wavenumbers, baselined, color='blue', alpha=0.7)
-    axes[0].set_title(f"After Baseline Correction: {label}")
-    axes[0].set_ylabel("Intensity (Counts)")
-    axes[0].grid(True, which='both', linestyle='--', alpha=0.5)
-
-    # 2. After Normalization (SNV)
-    axes[1].plot(wavenumbers, normalized, color='green')
-    axes[1].set_title("After SNV Normalization")
-    axes[1].set_ylabel("Standardized Intensity (Z-score)")
-    axes[1].set_xlabel("Wavenumber (cm⁻¹)")
-    axes[1].grid(True, which='both', linestyle='--', alpha=0.5)
-
-    plt.tight_layout()
-    snv_file = os.path.join(SNV_FOLDER, f"{label}_snv_diagnostic.png")
-    os.mkdir(SNV_FOLDER) if not os.path.exists(SNV_FOLDER) else None
-    plt.savefig(snv_file)
-    print(f"Saved SNV diagnostic plot to {snv_file}")
-    plt.close()
-
-def animate_preprocessed_spectra(spectra_name, wavelengths, snv_intensities, label=None):
-    """
-    Animates or plots overlaid SNV-normalized spectra.
-    """
-    print(f"Generating SNV visualization for {spectra_name}")
-
-    fig, ax = plt.subplots(figsize=(10, 8))
-
-    ax.set_title(f"SNV Normalized Spectra: {label}")
-    ax.set_xlabel("Wavenumber (cm⁻¹)")
-    ax.set_ylabel("Standardized Intensity (Z-score)")
-
-    # Adjust limits dynamically based on SNV data
-    ax.set_xlim(wavelengths.min(), wavelengths.max())
-    
-    # SNV data usually sits between -3 and 15. 
-    # We add a 10% buffer to the min/max for visibility.
-    y_min = np.min(snv_intensities) * 1.1
-    y_max = np.max(snv_intensities) * 1.1
-    ax.set_ylim(0, 7)
-    #ax.set_ylim(y_min, y_max)
-
-
-    cmap = plt.get_cmap('viridis')
-    
-    # Static Overlay Plot (All spectra at once)
-    for i in range(len(snv_intensities)):
-        color = cmap(i / len(snv_intensities))
-        ax.plot(wavelengths, snv_intensities[i], color=color, alpha=0.3)
-
-    # Save the static plot
-    plot_file = os.path.join(PRE_PROCESSED_FOLDER, f"{spectra_name}_preprocessed_static.png")
-    os.makedirs(PRE_PROCESSED_FOLDER, exist_ok=True)
-    plt.savefig(plot_file)
-    print(f"Saved static preprocessed plot to {plot_file}")
-
-    ax.clear()
-
-    # --- Animation Logic ---
-    line, = ax.plot([], [], lw=2)
-
-    def init():
-        line.set_data([], [])
-        return line,
-
-    def update(frame):
-        # Update line with the SNV intensity of the current frame
-        line.set_data(wavelengths, snv_intensities[frame])
-        line.set_color(cmap(frame / len(snv_intensities)))
-        return line,
-
-    num_frames = len(snv_intensities)
-    # Forward and backward for a smooth loop
-    frames_bidirectional = np.concatenate([np.arange(num_frames), np.arange(num_frames)[::-1]])
-
-    ani = animation.FuncAnimation(
-        fig=fig, 
-        func=update, 
-        frames=frames_bidirectional, 
-        init_func=init, 
-        blit=True, 
-        interval=50
-    )
-
-    animate_file = os.path.join(ANIMATE_FOLDER, f"{spectra_name}_snv_animation.gif")
-    os.makedirs(ANIMATE_FOLDER, exist_ok=True)
-    
-    # Save as GIF
-    ani.save(animate_file, writer='pillow')
-    print(f"Saved SNV animation to {animate_file}")
-    plt.close()
-
-def save_metrics_plot(all_true, all_preds, model_name, groupings, output_folder="model/metrics"):
-    os.makedirs(os.path.join(output_folder, groupings), exist_ok=True)
-
-    # Calculate metrics using 'weighted' so it works safely for both binary and multi-class
-    acc = accuracy_score(all_true, all_preds)
-    prec = precision_score(all_true, all_preds, average='weighted', zero_division=0)
-    rec = recall_score(all_true, all_preds, average='weighted', zero_division=0)
-    f1 = f1_score(all_true, all_preds, average='weighted', zero_division=0)
-
-    metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
-    scores = [acc, prec, rec, f1]
-
-    plt.figure(figsize=(7, 5))
-    bars = plt.bar(metrics, scores, color=['#4C72B0', '#55A868', '#C44E52', '#8172B3'])
-    plt.ylim(0, 1.1) # Set y-axis from 0 to 1.1 to make room for labels
-    plt.title(f"Overall Performance: {model_name}")
-    plt.ylabel("Score")
-
-    # Add the exact numbers on top of the bars
-    for bar in bars:
-        yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2.0, yval + 0.02, 
-                 f"{yval:.2f}", ha='center', va='bottom', fontweight='bold')
-
-    plt.tight_layout()
-    save_path = os.path.join(output_folder, groupings, f"{model_name}_metrics_bar.png")
-    plt.savefig(save_path, dpi=300) # dpi=300 makes it high-resolution
-    print(f"Saved metrics bar chart to {save_path}")
-    plt.close()
-## Component Analysis Functions
-def run_pca_analysis(X, y, sample_names, groupings):
-    print("Running PCA analysis...")
-    pca = PCA(n_components=2)
-    X_pca = pca.fit_transform(X)
-
-    var_explained = pca.explained_variance_ratio_ * 100
-
-    pc1_label = f"PC1 ({var_explained[0]:.1f}% var)"
-    pc2_label = f"PC2 ({var_explained[1]:.1f}% var)"
-
-    df = pd.DataFrame({
-        'PC1': X_pca[:, 0],
-        'PC2': X_pca[:, 1],
-        'Target': y,
-        'Sample_ID': sample_names
-    })
-    
-    # Plotly does the heavy lifting
-    fig = px.scatter(
-        df, x='PC1', y='PC2', 
-        color='Target', 
-        hover_name='Sample_ID', # This is the magic interactive part
-        title='Interactive PCA of SERS Spectra',
-        opacity=0.7,
-        labels={'PC1': pc1_label, 'PC2': pc2_label, 'Target': 'Spectra Group'}
-    )
-    html_file = os.path.join(COMPONENT_ANALYSIS_FOLDER, groupings, "pca.html")
-    os.makedirs(os.path.join(COMPONENT_ANALYSIS_FOLDER, groupings), exist_ok=True)
-    fig.write_html(html_file)
-    print(f"Saved PCA plot to {html_file}")
-    # fig.show()
-
-def run_tsne_analysis(X, y, sample_names, groupings, perplexity=15):
-    print(f"Running Interactive t-SNE (Perplexity: {perplexity})...")
-    
-    # Initialize and fit t-SNE. random_state ensures reproducible plots.
-    tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42)
-    X_tsne = tsne.fit_transform(X)
-    
-    # Create DataFrame
-    df = pd.DataFrame({
-        't-SNE 1': X_tsne[:, 0],
-        't-SNE 2': X_tsne[:, 1],
-        'Target': y,
-        'Sample_ID': sample_names
-    })
-    
-    # Plotly Scatter
-    fig = px.scatter(
-        df, 
-        x='t-SNE 1', 
-        y='t-SNE 2', 
-        color='Target', 
-        hover_name='Sample_ID', 
-        title=f'Interactive t-SNE of SERS Spectra (Perplexity: {perplexity})',
-        opacity=0.8,
-        labels={'Target': 'Spectra Group'}
-    )
-    
-    # Update layout to look clean
-    fig.update_layout(
-        plot_bgcolor='white',
-        xaxis=dict(showgrid=True, gridcolor='lightgrey', zeroline=False),
-        yaxis=dict(showgrid=True, gridcolor='lightgrey', zeroline=False)
-    )
-    html_file = os.path.join(COMPONENT_ANALYSIS_FOLDER, groupings, f"tsne_perplexity_{perplexity}_{groupings}.html")
-    os.makedirs(os.path.join(COMPONENT_ANALYSIS_FOLDER, groupings), exist_ok=True)
-    fig.write_html(html_file)
-    print(f"Saved t-SNE plot to {html_file}")
-    # fig.show()
-
-## Main Call for Preprocessing
-def preprocess_data(wavelengths, intensities, label):
-    # Placeholder for data preprocessing code
-    print("Preprocessing data...")
-    baseline_spectra = []
-
-    sample_y = intensities[0]
-    baseline_y = SpectraPreprocessor.baseline_als(sample_y)
-    corrected_y = sample_y - baseline_y
-
-    # Preprocess each spectrum: Baseline correction followed by SNV normalization
-    for spectrum in intensities:
-        baseline = SpectraPreprocessor.baseline_als(spectrum)
-        corrected = spectrum - baseline
-        baseline_spectra.append(corrected)
-    
-    pre_processed_spectra = SpectraPreprocessor.apply_snv(baseline_spectra)
-
-    ## Diagnostics and Animations Plot
-    # plot_baseline_diagnostic(wavelengths, sample_y, baseline_y, corrected_y, label)
-    # plot_normalization_diagnostic(wavelengths, baseline_spectra[0], pre_processed_spectra[0], label)
-    # animate_preprocessed_spectra(label, wavelengths, pre_processed_spectra, label)
-    return np.array(pre_processed_spectra)
-
-
-## Reads Spectra and Metadata Files
+# ---------------------------------------------------------------------------
+# I/O helpers
+# ---------------------------------------------------------------------------
 def read_spectra(spectra_path, metadata_path):
     with open(metadata_path, 'r') as f:
         metadata = f.read()
+    lines = metadata.splitlines()
+    num_spectra = int(lines[0].split(":")[1].strip())
+    label       = lines[6].split(":")[1].strip()
+    group       = lines[7].split(":")[1].strip()
 
+    df = pd.read_csv(spectra_path, header=None, names=["Wavenumber", "Intensity"])
+    wavelengths = df["Wavenumber"].head(SPECTRA_LENGTH).values
+    intensities = df["Intensity"].values.reshape(num_spectra, SPECTRA_LENGTH)
 
-    # Extracting metadata information
-    num_spectra = int(metadata.splitlines()[0].split(":")[1].strip())
-    label = metadata.splitlines()[6].split(":")[1].strip()
-    group = metadata.splitlines()[7].split(":")[1].strip()
-
-    spectra = pd.read_csv(spectra_path, header=None, names=["Wavenumber", "Intensity"])
-    wavelengths = spectra["Wavenumber"].head(SPECTRA_LENGTH).values
-    intensities = spectra["Intensity"].values.reshape(num_spectra, SPECTRA_LENGTH)
-
-    print (f"Number of spectra: {num_spectra}")
-    print (f"Label: {label}")
-    print (f"Group: {group}")
-    print (f"Wavelengths: {wavelengths[:5]} ...")
-    print (f"Intensities shape: {intensities.shape}")
-
+    print(f"  → {label} | group={group} | frames={num_spectra}")
     return wavelengths, intensities, label, group
 
-def save_final_model(X, y, wavelengths, model, model_name, output_folder="model/saved_models", groupings="Coffee"):
-    # 1. Initialize and fit the scaler on ALL data
+
+def load_all_spectra(spectra_numbers):
+    """Load raw spectra for all scan numbers. Returns (wavelengths, raw_dict).
+    raw_dict maps label → {'intensities': ndarray, 'group': str}
+    so we can re-preprocess without re-reading files for sweeps.
+    """
+    raw_dict = {}
+    wavelengths = None
+    for num in spectra_numbers:
+        meta_path   = os.path.join(METADATA_FOLDER, f"Captured_spectra_{num}_metadata.txt")
+        spectra_path = os.path.join(SPECTRA_FOLDER,  f"Captured_spectra_{num}.txt")
+        if os.path.exists(meta_path) and os.path.exists(spectra_path):
+            wl, intensities, label, group = read_spectra(spectra_path, meta_path)
+            if wavelengths is None:
+                wavelengths = wl
+            raw_dict[label] = {'intensities': intensities, 'group': group}
+        else:
+            print(f"  Warning: missing files for scan {num}, skipping.")
+    return wavelengths, raw_dict
+
+
+def build_feature_matrix(raw_dict, wavelengths, preprocess_mode='als_snv',
+                          group_filter=None):
+    """
+    Preprocess raw scans and stack into (X, y, sample_names, subject_groups).
+
+    Parameters
+    ----------
+    group_filter : set or None
+        If provided, only process scans whose 'group' value is in this set.
+        Pass this during sweeps to skip irrelevant scans (major speed-up).
+
+    sample_names  – full label, e.g. "Dora T6 L4"   (for location-based CV)
+    subject_groups – first word of label, e.g. "Dora" (for LOSO CV)
+    """
+    all_X, all_y, all_sample_names, all_subject_groups = [], [], [], []
+
+    for label, data in raw_dict.items():
+        group       = data['group']
+        # Skip irrelevant scans early to avoid unnecessary preprocessing
+        if group_filter is not None and group not in group_filter:
+            continue
+        intensities = data['intensities']
+
+        processed = SpectraPreprocessor.preprocess(intensities, mode=preprocess_mode)
+        n = processed.shape[0]
+
+        all_X.append(processed)
+        all_y.extend([group] * n)
+        all_sample_names.extend([label] * n)
+
+        # Extract subject name: first token of label (e.g. "Dora", "Nathan", "Maylette")
+        # For non-subject scans like "SERS substrate only L1" → "SERS" (filtered out anyway)
+        subject = label.split()[0]
+        all_subject_groups.extend([subject] * n)
+
+    X            = np.vstack(all_X)
+    y            = np.array(all_y)
+    sample_names = np.array(all_sample_names)
+    subject_grps = np.array(all_subject_groups)
+
+    # Crop low-wavenumber noise
+    wl = np.array(wavelengths, dtype=float)
+    valid = wl > CROP_THRESHOLD
+    return X[:, valid], y, sample_names, subject_grps, wl[valid]
+
+
+# ---------------------------------------------------------------------------
+# Target filtering
+# ---------------------------------------------------------------------------
+def desired_groups_for(groupings):
+    """Return the set of raw group values needed for a given analysis grouping."""
+    if groupings == 'Breathing':
+        return {'Breathing', 'Ambient Air', 'Nitrogen'}
+    elif groupings in ('Coffee', 'Breath'):
+        return {'No Coffee', 'Coffee'}
+    return None   # all groups
+
+
+def filter_targets(X, y, sample_names, subject_grps, groupings):
+    if groupings == "Breathing":
+        desired = {'Breathing', 'Ambient Air', 'Nitrogen'}
+    elif groupings in ("Coffee", "Breath"):
+        desired = {'No Coffee', 'Coffee'}
+    else:
+        desired = set(np.unique(y))
+
+    mask = np.isin(y, list(desired))
+    X_f  = X[mask]
+    y_f  = y[mask].copy()
+    sn_f = sample_names[mask]
+    sg_f = subject_grps[mask]
+
+    if groupings == "Breath":
+        y_f[:] = "Breath"   # collapse both coffee states into one
+
+    print(f"  Filtered to {len(X_f)} frames | targets: {list(desired)}")
+    return X_f, y_f, sn_f, sg_f
+
+
+# ---------------------------------------------------------------------------
+# ML pipeline
+# ---------------------------------------------------------------------------
+def get_models():
+    return {
+        "Linear SVM":       SVC(kernel='linear', class_weight='balanced', random_state=42),
+        "RBF SVM":          SVC(kernel='rbf',    class_weight='balanced', random_state=42),
+        "Random Forest":    RandomForestClassifier(n_estimators=100, class_weight='balanced',
+                                                   max_features='sqrt', random_state=42),
+        "Ridge Classifier": RidgeClassifier(alpha=1.0, class_weight='balanced'),
+        "Gradient Boosting":GradientBoostingClassifier(n_estimators=100, max_features='sqrt',
+                                                       subsample=0.8, random_state=42),
+    }
+
+
+def run_ml_pipeline(X, y, wavelengths, group_keys, groupings, cv_mode='loso',
+                    n_splits=5, preprocess_label='als_snv', save_outputs=True):
+    """
+    Run cross-validated ML benchmark.
+
+    Parameters
+    ----------
+    group_keys : ndarray
+        For cv_mode='loso'    → subject names (e.g. 'Dora', 'Nathan')
+        For cv_mode='location'→ full acquisition labels (e.g. 'Dora T6 L4')
+    """
+    cv_label = f"LOSO ({cv_mode})" if cv_mode == 'loso' else f"Location-based ({cv_mode})"
+    print(f"\n{'='*65}")
+    print(f"ML Benchmark | groupings={groupings} | CV={cv_label} | preprocess={preprocess_label}")
+    print(f"{'='*65}")
+
+    unique_groups = np.unique(group_keys)
+    actual_splits = min(n_splits, len(unique_groups))
+    if actual_splits < 2:
+        print(f"  ⚠ Only {len(unique_groups)} group(s) — cannot cross-validate. Skipping.")
+        return None, None, 0.0
+
+    gkf = StratifiedGroupKFold(n_splits=actual_splits)
+    models = get_models()
+
+    best_f1    = 0.0
+    best_name  = ""
+    best_model = None
+
+    summary_rows = []
+
+    for model_name, model in models.items():
+        print(f"\n  ── {model_name}")
+        all_true, all_preds = [], []
+
+        for fold, (train_idx, test_idx) in enumerate(gkf.split(X, y, group_keys)):
+            X_train, X_test = X[train_idx], X[test_idx]
+            y_train, y_test = y[train_idx], y[test_idx]
+
+            if cv_mode == 'loso':
+                held_out = np.unique(group_keys[test_idx])
+                print(f"    Fold {fold+1}: holding out {held_out}")
+
+            scaler = StandardScaler()
+            X_tr_s = scaler.fit_transform(X_train)
+            X_te_s = scaler.transform(X_test)
+
+            model.fit(X_tr_s, y_train)
+            preds = model.predict(X_te_s)
+
+            all_true.extend(y_test)
+            all_preds.extend(preds)
+
+        print(f"\n  Classification Report ({model_name}):")
+        print(classification_report(all_true, all_preds))
+
+        acc  = accuracy_score(all_true, all_preds)
+        prec = precision_score(all_true, all_preds, average='weighted', zero_division=0)
+        rec  = recall_score(all_true, all_preds,    average='weighted', zero_division=0)
+        f1   = f1_score(all_true, all_preds,        average='weighted', zero_division=0)
+
+        summary_rows.append({
+            'model': model_name, 'preprocess': preprocess_label, 'cv_mode': cv_mode,
+            'groupings': groupings, 'accuracy': acc, 'precision': prec,
+            'recall': rec, 'f1': f1,
+        })
+
+        if f1 > best_f1:
+            best_f1    = f1
+            best_name  = model_name
+            best_model = model
+
+        if save_outputs:
+            _save_confusion_matrix(all_true, all_preds, model_name,
+                                   groupings, cv_mode, preprocess_label)
+            _save_metrics_bar(all_true, all_preds, model_name,
+                              groupings, cv_mode, preprocess_label)
+
+    print(f"\n  ★ Best: {best_name}  F1={best_f1:.4f}")
+
+    if save_outputs and best_model is not None:
+        save_final_model(X, y, wavelengths, best_model, best_name,
+                         groupings=groupings, cv_mode=cv_mode,
+                         preprocess_label=preprocess_label)
+
+    return best_name, best_model, best_f1, pd.DataFrame(summary_rows)
+
+
+# ---------------------------------------------------------------------------
+# Sweep: all preprocessing modes × models
+# ---------------------------------------------------------------------------
+def run_sweep(raw_dict, wavelengths_raw, groupings='Coffee', cv_mode='loso'):
+    """
+    Iterate over every preprocessing mode, build features, and run the full ML
+    benchmark. Print a ranked leaderboard at the end.
+    """
+    print(f"\n{'#'*65}")
+    print(f"SWEEP: all preprocessing modes | groupings={groupings} | CV={cv_mode}")
+    print(f"{'#'*65}")
+
+    all_summaries = []
+    group_filter = desired_groups_for(groupings)
+
+    for mode in PREPROCESS_MODES:
+        print(f"\n>>> Preprocessing mode: {mode}")
+        X, y, sample_names, subject_grps, wl = build_feature_matrix(
+            raw_dict, wavelengths_raw, preprocess_mode=mode,
+            group_filter=group_filter)
+
+        X_f, y_f, sn_f, sg_f = filter_targets(X, y, sample_names, subject_grps, groupings)
+
+        if len(np.unique(y_f)) < 2:
+            print("  ⚠ Less than 2 classes after filtering — skipping.")
+            continue
+
+        group_keys = sg_f if cv_mode == 'loso' else sn_f
+
+        result = run_ml_pipeline(
+            X_f, y_f, wl, group_keys,
+            groupings=groupings, cv_mode=cv_mode,
+            n_splits=5, preprocess_label=mode,
+            save_outputs=False,   # suppress per-mode file saves during sweep
+        )
+        if result[0] is not None:
+            _, _, _, df = result
+            all_summaries.append(df)
+
+    if not all_summaries:
+        print("No results to report.")
+        return
+
+    leaderboard = pd.concat(all_summaries, ignore_index=True)
+    leaderboard = leaderboard.sort_values('f1', ascending=False).reset_index(drop=True)
+
+    print(f"\n{'='*65}")
+    print(f"SWEEP LEADERBOARD  (groupings={groupings}, cv={cv_mode})")
+    print(f"{'='*65}")
+    print(leaderboard[['preprocess','model','accuracy','precision','recall','f1']].to_string(index=False))
+
+    best_row = leaderboard.iloc[0]
+    print(f"\n★  BEST OVERALL: preprocess={best_row['preprocess']}  "
+          f"model={best_row['model']}  F1={best_row['f1']:.4f}")
+
+    # Save leaderboard CSV
+    os.makedirs("model", exist_ok=True)
+    lb_path = f"model/sweep_leaderboard_{groupings}_{cv_mode}.csv"
+    leaderboard.to_csv(lb_path, index=False)
+    print(f"   Leaderboard saved → {lb_path}")
+
+    # Re-run the winner WITH file saves (confusion matrix, importance, saved model)
+    best_mode = best_row['preprocess']
+    print(f"\n>>> Re-running winner ({best_row['model']} / {best_mode}) with full output saves...")
+    X, y, sample_names, subject_grps, wl = build_feature_matrix(
+        raw_dict, wavelengths_raw, preprocess_mode=best_mode,
+        group_filter=group_filter)
+    X_f, y_f, sn_f, sg_f = filter_targets(X, y, sample_names, subject_grps, groupings)
+    group_keys = sg_f if cv_mode == 'loso' else sn_f
+
+    run_ml_pipeline(X_f, y_f, wl, group_keys,
+                    groupings=groupings, cv_mode=cv_mode,
+                    n_splits=5, preprocess_label=best_mode,
+                    save_outputs=True)
+
+    return leaderboard
+
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+def _cm_folder(groupings, cv_mode, preprocess_label):
+    tag = f"{cv_mode}__{preprocess_label}"
+    return os.path.join(CONFUSION_MATRIX_FOLDER, groupings, tag)
+
+def _metrics_folder(groupings, cv_mode, preprocess_label):
+    tag = f"{cv_mode}__{preprocess_label}"
+    return os.path.join("model/metrics", groupings, tag)
+
+
+def _save_confusion_matrix(all_true, all_preds, model_name, groupings, cv_mode, preprocess_label):
+    folder = _cm_folder(groupings, cv_mode, preprocess_label)
+    os.makedirs(folder, exist_ok=True)
+
+    cm = confusion_matrix(all_true, all_preds)
+    labels = np.unique(all_true).tolist()
+
+    plt.figure(figsize=(6, 4))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=labels, yticklabels=labels)
+    plt.title(f"Confusion Matrix: {model_name}\nCV={cv_mode} | preprocess={preprocess_label}")
+    plt.ylabel('Actual')
+    plt.xlabel('Predicted')
+    plt.tight_layout()
+    path = os.path.join(folder, f"{model_name}_confusion_matrix.png")
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"    Saved confusion matrix → {path}")
+
+
+def _save_metrics_bar(all_true, all_preds, model_name, groupings, cv_mode, preprocess_label):
+    folder = _metrics_folder(groupings, cv_mode, preprocess_label)
+    os.makedirs(folder, exist_ok=True)
+
+    acc  = accuracy_score(all_true, all_preds)
+    prec = precision_score(all_true, all_preds, average='weighted', zero_division=0)
+    rec  = recall_score(all_true, all_preds,    average='weighted', zero_division=0)
+    f1   = f1_score(all_true, all_preds,        average='weighted', zero_division=0)
+
+    metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+    scores  = [acc, prec, rec, f1]
+
+    plt.figure(figsize=(7, 5))
+    bars = plt.bar(metrics, scores, color=['#4C72B0','#55A868','#C44E52','#8172B3'])
+    plt.ylim(0, 1.15)
+    plt.title(f"{model_name}\nCV={cv_mode} | preprocess={preprocess_label}")
+    plt.ylabel("Score")
+    for bar in bars:
+        yval = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2.0, yval + 0.02,
+                 f"{yval:.2f}", ha='center', va='bottom', fontweight='bold')
+    plt.tight_layout()
+    path = os.path.join(folder, f"{model_name}_metrics_bar.png")
+    plt.savefig(path, dpi=150)
+    plt.close()
+
+
+def save_final_model(X, y, wavelengths, model, model_name,
+                     output_folder="model/saved_models",
+                     groupings="Coffee", cv_mode='loso', preprocess_label='als_snv'):
+    tag  = f"{cv_mode}__{preprocess_label}"
+    folder = os.path.join(output_folder, groupings, tag)
+    os.makedirs(folder, exist_ok=True)
+
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-    
-    # 2. Train the model on ALL data
-    print(f"Training final {model_name} on all {len(X)} samples for deployment...")
     model.fit(X_scaled, y)
-    
-    # 3. Package the scaler and model together in a dictionary
-    model_package = {
-        'scaler': scaler,
-        'model': model
-    }
-    
-    # 4. Save to disk
-    save_path = os.path.join(output_folder, groupings, f"{model_name}_production.joblib")
-    os.makedirs(os.path.join(output_folder, groupings), exist_ok=True)
-    joblib.dump(model_package, save_path)
-    print(f"Successfully saved model package to {save_path}\n")
 
-    print(f"Calculating feature importances for {model_name}...")
+    pkg = {'scaler': scaler, 'model': model, 'preprocess_mode': preprocess_label}
+    save_path = os.path.join(folder, f"{model_name}_production.joblib")
+    joblib.dump(pkg, save_path)
+    print(f"  Saved production model → {save_path}")
+
+    # Feature importance
     importances = None
-    method_used = ""
-    
     if hasattr(model, "feature_importances_"):
         importances = model.feature_importances_
-        method_used = "Tree Splits"
+        method = "Tree Splits"
     elif hasattr(model, "coef_"):
-        importances = np.abs(model.coef_[0])
-        method_used = "Absolute Linear Coefficients"
+        coef = model.coef_
+        importances = np.abs(coef[0] if coef.ndim > 1 else coef)
+        method = "Absolute Coefficients"
     else:
-        print("Calculating Permutation Importance (this may take a moment)...")
-        result = permutation_importance(model, X_scaled, y, n_repeats=10, random_state=42, n_jobs=-1)
-        importances = result.importances_mean
-        method_used = "Permutation Importance"
+        print("  Computing permutation importance (may take a moment)...")
+        res = permutation_importance(model, X_scaled, y, n_repeats=10,
+                                     random_state=42, n_jobs=-1)
+        importances = res.importances_mean
+        method = "Permutation Importance"
 
-    # 5. Plot and Save the Importance Spectrum
+    imp_folder = os.path.join(IMPORTANCE_FOLDER, groupings, tag)
+    os.makedirs(imp_folder, exist_ok=True)
+
     plt.figure(figsize=(10, 5))
     plt.plot(wavelengths, importances, color='darkred', linewidth=1.5)
     plt.fill_between(wavelengths, importances, color='red', alpha=0.3)
-    
-    plt.title(f"Feature Importance Spectrum\nModel: {model_name} ({method_used})")
+    plt.title(f"Feature Importance: {model_name} ({method})\nCV={cv_mode} | preprocess={preprocess_label}")
     plt.xlabel("Wavenumber (cm⁻¹)")
     plt.ylabel("Relative Importance")
     plt.xlim(wavelengths.min(), wavelengths.max())
-    
-    # Highlight top 3 peaks
-    top_3_indices = np.argsort(importances)[-3:]
-    for idx in top_3_indices:
+
+    top3 = np.argsort(importances)[-3:]
+    for idx in top3:
         plt.axvline(x=wavelengths[idx], color='black', linestyle='--', alpha=0.5)
-        plt.text(wavelengths[idx], importances[idx], f"{wavelengths[idx]:.1f}", 
-                 rotation=90, va='bottom', ha='right', fontsize=9, fontweight='bold')
+        plt.text(wavelengths[idx], importances[idx],
+                 f"{wavelengths[idx]:.1f}", rotation=90,
+                 va='bottom', ha='right', fontsize=9, fontweight='bold')
 
     plt.tight_layout()
-    importance_save_path = os.path.join(IMPORTANCE_FOLDER, groupings, f"{model_name}_importance_spectrum.png")
-    os.makedirs(os.path.join(IMPORTANCE_FOLDER, groupings), exist_ok=True)
-    plt.savefig(importance_save_path, dpi=300)
-    print(f"Saved Importance Spectrum to {importance_save_path}\n")
+    imp_path = os.path.join(imp_folder, f"{model_name}_importance_spectrum.png")
+    plt.savefig(imp_path, dpi=300)
     plt.close()
-
-def run_ml_pipeline(X, y, wavelengths, sample_names, groupings, n_splits=5):
-    print(f"Starting ML Pipeline with {n_splits}-Fold Group Validation...\n")
-    
-    models = {
-        "Linear SVM": SVC(kernel='linear', class_weight='balanced', random_state=42),
-        "Random Forest": RandomForestClassifier(n_estimators=100, class_weight='balanced', random_state=42),
-        "Ridge Classifier": RidgeClassifier(alpha=1.0, class_weight='balanced', random_state=42),
-        "RBF SVM": SVC(kernel='rbf', class_weight='balanced', random_state=42),
-        "Gradient Boosting": GradientBoostingClassifier(n_estimators=100, random_state=42)
-    }
-    
-    gkf = StratifiedGroupKFold(n_splits=n_splits)
-    
-    best_score = 0.0
-    best_model_name = ""
-    best_model = None
-
-    for model_name, model in models.items():
-        print(f"=== Training & Validating {model_name} ===")
-        
-        all_true = []
-        all_preds = []
-        
-        for train_index, test_index in gkf.split(X, y, sample_names):
-            X_train, X_test = X[train_index], X[test_index]
-            y_train, y_test = y[train_index], y[test_index]
-            
-            scaler = StandardScaler()
-            
-            X_train_scaled = scaler.fit_transform(X_train)
-            
-            X_test_scaled = scaler.transform(X_test)
-            
-            model.fit(X_train_scaled, y_train)
-            preds = model.predict(X_test_scaled)
-            # -----------------------------------------------
-            
-            all_true.extend(y_test)
-            all_preds.extend(preds)
-            
-        print(f"\nClassification Report for {model_name}:")
-        print(classification_report(all_true, all_preds))
-
-        current_score = f1_score(all_true, all_preds, average='weighted', zero_division=0)
-        
-        if current_score > best_score:
-            best_score = current_score
-            best_model_name = model_name
-            best_model = model  # Store the actual algorithm object
-        
-        # --- Plotting the Confusion Matrix ---
-        cm = confusion_matrix(all_true, all_preds)
-        target_names = np.unique(all_true).tolist()
-        
-        plt.figure(figsize=(6, 4))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                    xticklabels=target_names, yticklabels=target_names)
-        plt.title(f"Confusion Matrix: {model_name}")
-        plt.ylabel('Actual Label')
-        plt.xlabel('Predicted Label')
-        plt.tight_layout()
-        cm_file = os.path.join(CONFUSION_MATRIX_FOLDER, groupings, f"{model_name}_confusion_matrix.png")
-        os.makedirs(os.path.join(CONFUSION_MATRIX_FOLDER, groupings), exist_ok=True)
-        plt.savefig(cm_file)
-        print(f"Saved confusion matrix to {cm_file}")
-        plt.close() # Ensure you close the plot here to save memory
-        save_metrics_plot(all_true, all_preds, model_name, groupings)
-    
-    print(f"\nBest Model: {best_model_name} with F1-Score: {best_score:.4f}")
-    save_final_model(X, y, wavelengths, best_model, best_model_name, groupings=groupings)
-    
-## Main Analysis Function
-def analyze_data(X, y, sample_names, wavelengths, groupings="Coffee"):
-    if groupings == "Breathing":
-        desired_targets = ['Breathing', 'Ambient Air', 'Nitrogen']
-    else:
-        desired_targets = ['Blank', 'No Coffee', 'Coffee']
-
-    mask = np.isin(y, desired_targets)
-    X_filtered = X[mask]
-    y_filtered = y[mask]
-    sample_names_filtered = sample_names[mask]
+    print(f"  Saved importance spectrum → {imp_path}")
 
 
-    if groupings == "Breath":
-        breath_label = ['No Coffee', 'Coffee']
-        y_filtered[np.isin(y_filtered, breath_label)] = "Breath"
+# ---------------------------------------------------------------------------
+# Component analysis (PCA / t-SNE)
+# ---------------------------------------------------------------------------
+def run_pca_analysis(X, y, sample_names, groupings, cv_mode, preprocess_label):
+    pca = PCA(n_components=2)
+    Xp  = pca.fit_transform(X)
+    var = pca.explained_variance_ratio_ * 100
 
-    print(f"Filtered dataset to {len(X_filtered)} samples with targets in {desired_targets}")
+    df = pd.DataFrame({'PC1': Xp[:,0], 'PC2': Xp[:,1],
+                       'Target': y, 'Sample_ID': sample_names})
+    fig = px.scatter(df, x='PC1', y='PC2', color='Target', hover_name='Sample_ID',
+                     title=f'PCA | {groupings} | {cv_mode} | {preprocess_label}',
+                     opacity=0.7,
+                     labels={'PC1': f"PC1 ({var[0]:.1f}%)",
+                             'PC2': f"PC2 ({var[1]:.1f}%)"})
+    out = os.path.join(COMPONENT_ANALYSIS_FOLDER, groupings,
+                       f"{cv_mode}__{preprocess_label}", "pca.html")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    fig.write_html(out)
+    print(f"  Saved PCA → {out}")
 
-    run_pca_analysis(X_filtered, y_filtered, sample_names_filtered, groupings)
-    run_tsne_analysis(X_filtered, y_filtered, sample_names_filtered, groupings)
-    run_tsne_analysis(X_filtered, y_filtered, sample_names_filtered, groupings, perplexity=30)
 
-    run_ml_pipeline(X_filtered, y_filtered, wavelengths, sample_names_filtered, groupings)
+def run_tsne_analysis(X, y, sample_names, groupings, cv_mode, preprocess_label, perplexity=15):
+    tsne  = TSNE(n_components=2, perplexity=perplexity, random_state=42)
+    Xt    = tsne.fit_transform(X)
+    df    = pd.DataFrame({'t-SNE 1': Xt[:,0], 't-SNE 2': Xt[:,1],
+                          'Target': y, 'Sample_ID': sample_names})
+    fig = px.scatter(df, x='t-SNE 1', y='t-SNE 2', color='Target',
+                     hover_name='Sample_ID',
+                     title=f't-SNE (p={perplexity}) | {groupings} | {cv_mode} | {preprocess_label}')
+    out = os.path.join(COMPONENT_ANALYSIS_FOLDER, groupings,
+                       f"{cv_mode}__{preprocess_label}",
+                       f"tsne_p{perplexity}.html")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    fig.write_html(out)
+    print(f"  Saved t-SNE (p={perplexity}) → {out}")
 
 
+# ---------------------------------------------------------------------------
+# Top-level analyze_data
+# ---------------------------------------------------------------------------
+def analyze_data(X, y, sample_names, subject_grps, wavelengths,
+                 groupings='Coffee', cv_mode='loso', preprocess_label='als_snv'):
+
+    X_f, y_f, sn_f, sg_f = filter_targets(X, y, sample_names, subject_grps, groupings)
+
+    if len(np.unique(y_f)) < 2:
+        print(f"  ⚠ {groupings}: fewer than 2 classes — skipping.")
+        return
+
+    group_keys = sg_f if cv_mode == 'loso' else sn_f
+
+    run_pca_analysis(X_f, y_f, sn_f, groupings, cv_mode, preprocess_label)
+    run_tsne_analysis(X_f, y_f, sn_f, groupings, cv_mode, preprocess_label, perplexity=15)
+    run_tsne_analysis(X_f, y_f, sn_f, groupings, cv_mode, preprocess_label, perplexity=30)
+
+    run_ml_pipeline(X_f, y_f, wavelengths, group_keys,
+                    groupings=groupings, cv_mode=cv_mode,
+                    n_splits=5, preprocess_label=preprocess_label,
+                    save_outputs=True)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 def main():
-    ## Parsing for which spectra to analyze and groups
-    parser = argparse.ArgumentParser(description="Animate spectra and metadata")
-    parser.add_argument("--spectra", default=".", help="Spectra number to animate (default: all)")
-    parser.add_argument("--groups", default=".", help="Groups to analyze (default: all)")
-
+    parser = argparse.ArgumentParser(description="SERS-EBC Breathomics ML Pipeline")
+    parser.add_argument("--spectra", default=".",
+                        help="Comma-separated scan numbers, or '.' for all 1-67")
+    parser.add_argument("--groups", default="Coffee",
+                        choices=["Coffee", "Breathing", "Breath", "all"],
+                        help="Which label grouping to analyze (default: Coffee)")
+    parser.add_argument("--cv_mode", default="loso",
+                        choices=["loso", "location"],
+                        help="Cross-validation strategy: 'loso' (subject-level) "
+                             "or 'location' (acquisition-label-level). Default: loso")
+    parser.add_argument("--preprocess", default="als_snv",
+                        choices=PREPROCESS_MODES,
+                        help="Preprocessing pipeline. Default: als_snv")
+    parser.add_argument("--sweep", action="store_true",
+                        help="Grid-search all preprocessing modes × models and report winner")
     args = parser.parse_args()
 
-    if args.spectra == ".":
-        spectra_numbers = range(1, 68)
+    spectra_numbers = range(1, 68) if args.spectra == "." \
+                      else [int(n) for n in args.spectra.split(",")]
+
+    print(f"\nLoading spectra from {SPECTRA_FOLDER} ...")
+    wavelengths_raw, raw_dict = load_all_spectra(spectra_numbers)
+
+    if not raw_dict:
+        print("No valid spectra loaded. Exiting.")
+        return
+
+    groupings_list = (["Coffee", "Breathing", "Breath"]
+                      if args.groups == "all" else [args.groups])
+
+    if args.sweep:
+        for grp in groupings_list:
+            run_sweep(raw_dict, wavelengths_raw, groupings=grp, cv_mode=args.cv_mode)
     else:
-        spectra_numbers = [int(num) for num in args.spectra.split(",")]
+        print(f"\nPreprocessing with mode: {args.preprocess}")
+        # When analyzing a single grouping, filter scans before preprocessing for speed
+        single_filter = desired_groups_for(args.groups) if args.groups != 'all' else None
+        X, y, sample_names, subject_grps, wavelengths = build_feature_matrix(
+            raw_dict, wavelengths_raw, preprocess_mode=args.preprocess,
+            group_filter=single_filter)
 
-    all_X = []
-    all_targets = []
-    all_sample_names = []
+        for grp in groupings_list:
+            analyze_data(X, y, sample_names, subject_grps, wavelengths,
+                         groupings=grp, cv_mode=args.cv_mode,
+                         preprocess_label=args.preprocess)
 
-    wavelengths = None  # Initialize wavelengths variable to be used later in importance plotting
-
-    for num in spectra_numbers:
-        metadata_file = os.path.join(METADATA_FOLDER, f"Captured_spectra_{num}_metadata.txt")
-        spectra_file = os.path.join(SPECTRA_FOLDER, f"Captured_spectra_{num}.txt")
-        if os.path.exists(metadata_file) and os.path.exists(spectra_file):
-            wavelengths, intensities, label, group = read_spectra(spectra_file, metadata_file)
-
-            print(f"Analyzing spectra for label: {label}, group: {group}")
-            print(f"Wavelengths: {wavelengths[:5]} ...")
-            print(f"Intensities shape: {intensities.shape}")
-            preprocessed_spectra = preprocess_data(wavelengths, intensities, label)
-
-            all_X.append(preprocessed_spectra)
-
-            num_spectra = preprocessed_spectra.shape[0]
-            all_targets.extend([group] * num_spectra)
-            all_sample_names.extend([label] * num_spectra)
-
-        else:
-            print(f"Warning: Missing files for spectra number {num}. Skipping.")
-
-    if len(all_X) > 0:
-        X = np.vstack(all_X)
-        y = np.array(all_targets)
-        sample_names = np.array(all_sample_names)
-        print(f"Feature Matrix (X) : {X.shape}, Labels shape: {y.shape}, Sample names shape: {sample_names.shape}")
-
-        wavelengths = np.array(wavelengths, dtype=float)  # Ensure wavelengths are float64 for later processing
-        valid_indices = wavelengths > CROP_THRESHOL
-        wavelengths = wavelengths[valid_indices]
-        X = X[:, valid_indices]
-        analyze_data(X, y, sample_names, wavelengths, groupings="Coffee")
-        analyze_data(X, y, sample_names, wavelengths, groupings="Breathing")
-        analyze_data(X, y, sample_names, wavelengths, groupings="Breath")
-
-    else:
-        print("No valid spectra to analyze.")
 
 if __name__ == "__main__":
     main()
-
-
-
-
-

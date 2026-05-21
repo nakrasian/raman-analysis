@@ -9,20 +9,20 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
+
     <!-- Tailwind & daisyUI CDN -->
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.10.1/dist/full.min.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.tailwindcss.com"></script>
 
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    
+
     {% load static %}
     <link rel="stylesheet" href="{% static 'css/style.css' %}">
 </head>
 
 <body class="bg-base-200 min-h-screen text-base-content font-sans">
-    
+
     <!-- Navbar -->
     <div class="navbar bg-primary text-primary-content shadow-md z-50">
         <div class="flex-1">
@@ -35,9 +35,10 @@
 
     <!-- Main Layout -->
     <div class="flex flex-col lg:flex-row min-h-[calc(100vh-4rem)]">
-        
+
         <!-- Sidebar Controls -->
-        <aside class="w-full lg:w-80 bg-base-100 shadow-xl p-6 flex flex-col gap-6 z-10 shrink-0 border-r border-base-300">
+        <aside
+            class="w-full lg:w-80 bg-base-100 shadow-xl p-6 flex flex-col gap-6 z-10 shrink-0 border-r border-base-300">
             <h2 class="text-xl font-bold border-b pb-2">Controls</h2>
 
             <!-- Preprocessing Group -->
@@ -59,12 +60,13 @@
 
             <!-- Model Group -->
             <div class="form-control space-y-4">
-                <h3 class="font-semibold text-base-content/80 uppercase text-sm tracking-wider">Model Classification</h3>
+                <h3 class="font-semibold text-base-content/80 uppercase text-sm tracking-wider">Model Classification
+                </h3>
                 <label class="label cursor-pointer justify-start gap-4">
                     <input type="checkbox" id="display-shapley" class="toggle toggle-secondary toggle-sm" />
                     <span class="label-text font-medium">Display Shapley Graph</span>
                 </label>
-                
+
                 <div class="w-full">
                     <label class="label"><span class="label-text">Target Group</span></label>
                     <select id="target-group" class="select select-bordered select-sm w-full">
@@ -83,11 +85,19 @@
             <div class="form-control space-y-4 mt-auto lg:mt-0">
                 <h3 class="font-semibold text-base-content/80 uppercase text-sm tracking-wider">Sequence Controls</h3>
                 <div>
-                    <label class="label"><span class="label-text">Frame Index: <span id="frame-display" class="font-bold text-primary">0</span></span></label>
-                    <input type="range" id="frame-slider" min="0" max="0" value="0" class="range range-primary range-sm" disabled />
+                    <label class="label"><span class="label-text">Frame Index: <span id="frame-display"
+                                class="font-bold text-primary">0</span></span></label>
+                    <input type="range" id="frame-slider" min="0" max="0" value="0" class="range range-primary range-sm"
+                        disabled />
                 </div>
                 <button id="btn-animate" class="btn btn-outline btn-primary w-full" disabled>
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24"
+                        stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
                     Animate Sequence
                 </button>
             </div>
@@ -95,21 +105,30 @@
 
         <!-- Main Content -->
         <main class="flex-1 p-4 lg:p-8 overflow-y-auto w-full max-w-[1400px] mx-auto space-y-8">
-            
+
             <!-- Input Section -->
             <div class="card bg-base-100 shadow-sm border border-base-200">
                 <div class="card-body p-6">
                     <h3 class="card-title text-lg mb-4">Upload Spectra Data</h3>
                     <div class="grid grid-cols-1 md:grid-cols-12 gap-6 items-end">
                         <div class="form-control md:col-span-3">
-                            <label class="label" for="patient-id"><span class="label-text font-medium">Patient / Sample ID</span></label>
-                            <input type="text" id="patient-id" placeholder="ID-83746-05836" class="input input-bordered w-full" />
+                            <label class="label" for="patient-id"><span class="label-text font-medium">Patient / Sample
+                                    ID</span></label>
+                            <input type="text" id="patient-id" placeholder="ID-83746-05836"
+                                class="input input-bordered w-full" />
                         </div>
-                        
+
                         <div class="md:col-span-6">
-                            <div class="border-2 border-dashed border-base-300 rounded-box p-4 text-center cursor-pointer hover:bg-base-200 transition-colors" id="file-dropzone" onclick="document.getElementById('file-upload').click()">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mx-auto text-base-content/50 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
-                                <span class="text-sm font-medium text-base-content/70">Drag & Drop .csv/.txt files here, or Click to Browse</span>
+                            <div class="border-2 border-dashed border-base-300 rounded-box p-4 text-center cursor-pointer hover:bg-base-200 transition-colors"
+                                id="file-dropzone" onclick="document.getElementById('file-upload').click()">
+                                <svg xmlns="http://www.w3.org/2000/svg"
+                                    class="h-8 w-8 mx-auto text-base-content/50 mb-2" fill="none" viewBox="0 0 24 24"
+                                    stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                                </svg>
+                                <span class="text-sm font-medium text-base-content/70">Drag & Drop .csv/.txt files here,
+                                    or Click to Browse</span>
                                 <input type="file" id="file-upload" multiple accept=".csv,.txt" class="hidden" />
                             </div>
                             <div id="file-list" class="mt-2 text-sm text-base-content/70 flex flex-col gap-1"></div>
@@ -117,7 +136,8 @@
 
                         <div class="md:col-span-3 flex flex-col gap-2">
                             <button id="btn-analyze" class="btn btn-primary w-full">Analyze Data</button>
-                            <button id="btn-export" class="btn btn-outline btn-accent w-full" disabled>Export PDF Report</button>
+                            <button id="btn-export" class="btn btn-outline btn-accent w-full" disabled>Export PDF
+                                Report</button>
                         </div>
                     </div>
                 </div>
@@ -125,7 +145,7 @@
 
             <!-- Dashboard Results Section -->
             <div id="dashboard-section" class="hidden space-y-8">
-                
+
                 <div class="flex items-center justify-between">
                     <h3 class="text-2xl font-bold flex items-center gap-2">
                         📂 Patient Dashboard: <span id="dash-model-name" class="text-primary">None</span>
@@ -140,7 +160,8 @@
                 <div class="card bg-base-100 shadow-sm border border-base-200">
                     <div class="card-body p-0">
                         <div role="tablist" class="tabs tabs-bordered w-full pt-4 px-4" id="chart-tabs">
-                            <input type="radio" name="chart_tabs" role="tab" class="tab font-semibold" aria-label="Original Spectra" checked id="tab-original" />
+                            <input type="radio" name="chart_tabs" role="tab" class="tab font-semibold"
+                                aria-label="Original" checked id="tab-original" />
                             <div role="tabpanel" class="tab-content bg-base-100 border-base-300 p-6">
                                 <h4 class="text-lg font-bold mb-4">Original Spectra (with Baseline)</h4>
                                 <div class="relative w-full h-[450px]">
@@ -148,7 +169,8 @@
                                 </div>
                             </div>
 
-                            <input type="radio" name="chart_tabs" role="tab" class="tab font-semibold" aria-label="Preprocessed Spectra" id="tab-processed" />
+                            <input type="radio" name="chart_tabs" role="tab" class="tab font-semibold"
+                                aria-label="Preprocessed" id="tab-processed" />
                             <div role="tabpanel" class="tab-content bg-base-100 border-base-300 p-6">
                                 <h4 class="text-lg font-bold mb-4">Preprocessed Spectra Output</h4>
                                 <div class="relative w-full h-[450px]">
@@ -156,9 +178,10 @@
                                 </div>
                             </div>
 
-                            <input type="radio" name="chart_tabs" role="tab" class="tab font-semibold text-secondary" aria-label="SHAP Impact" id="tab-shap" />
+                            <input type="radio" name="chart_tabs" role="tab" class="tab font-semibold text-secondary"
+                                aria-label="SHAP" id="tab-shap" />
                             <div role="tabpanel" class="tab-content bg-base-100 border-base-300 p-6">
-                                <h4 class="text-lg font-bold mb-4 text-secondary">Local Interpretability Map (SHAP Impact)</h4>
+                                <h4 class="text-lg font-bold mb-4 text-secondary">Local Interpretability Map</h4>
                                 <div class="relative w-full h-[450px]">
                                     <canvas id="chart-shap"></canvas>
                                 </div>
@@ -173,11 +196,13 @@
     </div>
 
     <!-- Loader Overlay -->
-    <div id="loader" class="hidden fixed inset-0 bg-base-300/60 backdrop-blur-sm z-[100] flex flex-col items-center justify-center">
+    <div id="loader"
+        class="hidden fixed inset-0 bg-base-300/60 backdrop-blur-sm z-[100] flex flex-col items-center justify-center">
         <span class="loading loading-spinner loading-lg text-primary"></span>
         <div class="mt-4 text-lg font-bold text-base-content">Processing...</div>
     </div>
 
     <script src="{% static 'js/app.js' %}"></script>
 </body>
+
 </html>
